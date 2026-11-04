@@ -38,3 +38,9 @@ _shot*.png
 _crop.png
 _build.log
 *.log
+_qa.py
+_qa/
+_mkt*.py
+_mkt/
+_release/
+小红书上架与发货方案.md

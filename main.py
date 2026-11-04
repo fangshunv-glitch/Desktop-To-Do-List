@@ -9,8 +9,10 @@ import sys
 import os
 import json
 import uuid
+import shutil
 import datetime as dt
 import re
+import traceback
 from pathlib import Path
 
 from PySide6.QtCore import (Qt, QTimer, QPoint, QRectF, QSize, QDate, Signal,
@@ -29,7 +31,45 @@ if getattr(sys, "frozen", False):
     BASE_DIR = Path(sys.executable).resolve().parent
 else:
     BASE_DIR = Path(__file__).resolve().parent
-DATA_PATH = BASE_DIR / "data.json"
+
+
+def _user_data_dir():
+    """可写的用户数据目录。
+
+    默认放 %LOCALAPPDATA%\\TodayPlan，而不是 exe 同级目录，原因：
+    1. 买家把程序解压到 C:\\Program Files 之类无写权限的位置时，
+       同级目录写不进去，所有事项会在下次打开时凭空消失；
+    2. 在压缩包里直接双击运行时，Windows 会解压到临时目录，
+       关掉窗口数据就没了 —— 放用户目录可以避免；
+    3. 覆盖更新 exe 时不会连数据一起覆盖掉。
+    """
+    base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
+    root = Path(base) if base else Path.home() / ".local" / "share"
+    return root / "TodayPlan"
+
+
+def _resolve_data_path(local=None, user_dir=None):
+    """决定 data.json 的位置，并兼容老的绿色版（数据在 exe 同级）。"""
+    local = Path(local) if local else BASE_DIR / "data.json"
+    target = (Path(user_dir) / "data.json") if user_dir else _user_data_dir() / "data.json"
+    if local.exists() and not target.exists():
+        # 老用户升级：把原数据搬过去，界面无缝衔接
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(local, target)
+        except Exception:
+            return local                     # 搬不动就继续用本地，至少能用
+    if target.exists():
+        return target
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        return target
+    except Exception:
+        return local                         # 用户目录也建不出来，退回同级
+
+
+DATA_PATH = _resolve_data_path()
+LOG_DIR = DATA_PATH.parent
 
 # ---------- 配色：青绿主调，低饱和，看着不累 ----------
 C_BG        = "#FFFFFF"
@@ -102,6 +142,8 @@ def now_str():
 class Store:
     def __init__(self, path: Path):
         self.path = path
+        self.on_error = None          # 保存失败时的回调（由界面挂上去提示用户）
+        self._err_notified = False
         self.data = {
             "version": 2,
             "projects": [],
@@ -112,6 +154,136 @@ class Store:
                          "filter": "all", "ui_ver": 2},
         }
         self.load()
+
+    # ---------- 读入后的净化 ----------
+    # 目的：任何一个字段被手改坏（null / 字符串 / 越界数字）都不能让程序
+    # 启动即崩。买家一旦遇到打不开，基本等于退货，所以这里全部兜住。
+    @staticmethod
+    def _as_bool(v, default):
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, (int, float)):
+            return bool(v)
+        if isinstance(v, str):
+            return v.strip().lower() in ("1", "true", "yes", "on")
+        return default
+
+    @staticmethod
+    def _as_int(v, default, lo=None, hi=None):
+        try:
+            n = int(v)
+        except (TypeError, ValueError):
+            return default
+        if lo is not None and n < lo:
+            n = lo
+        if hi is not None and n > hi:
+            n = hi
+        return n
+
+    @staticmethod
+    def _as_float(v, default, lo=None, hi=None):
+        try:
+            n = float(v)
+        except (TypeError, ValueError):
+            return default
+        if n != n:                    # NaN
+            return default
+        if lo is not None and n < lo:
+            n = lo
+        if hi is not None and n > hi:
+            n = hi
+        return n
+
+    @staticmethod
+    def _as_due(v):
+        """截止日只接受 YYYY-MM-DD，其余一律清空，避免渲染时炸。"""
+        if not isinstance(v, str):
+            return None
+        v = v.strip()[:10]
+        try:
+            dt.date.fromisoformat(v)
+            return v
+        except ValueError:
+            return None
+
+    def _clean_settings(self, raw):
+        st = self.data["settings"]
+        if not isinstance(raw, dict):
+            return
+        if "on_top" in raw:
+            st["on_top"] = self._as_bool(raw["on_top"], True)
+        if "folded" in raw:
+            st["folded"] = self._as_bool(raw["folded"], False)
+        if "show_done" in raw:
+            st["show_done"] = self._as_bool(raw["show_done"], True)
+        if "hover_opaque" in raw:
+            st["hover_opaque"] = self._as_bool(raw["hover_opaque"], True)
+        if "w" in raw:
+            st["w"] = self._as_int(raw["w"], 380, 320, 1200)
+        if "h" in raw:
+            st["h"] = self._as_int(raw["h"], 500, 260, 2000)
+        if "x" in raw:
+            st["x"] = None if raw["x"] is None else self._as_int(raw["x"], None)
+        if "y" in raw:
+            st["y"] = None if raw["y"] is None else self._as_int(raw["y"], None)
+        if "opacity" in raw:
+            st["opacity"] = self._as_float(raw["opacity"], 0.85, 0.4, 1.0)
+        if "ui_ver" in raw:
+            st["ui_ver"] = self._as_int(raw["ui_ver"], 0, 0, 999)
+        if "filter" in raw:
+            f = raw["filter"]
+            st["filter"] = f if isinstance(f, str) and f else "all"
+
+    def _clean_projects(self, raw):
+        out, seen = [], set()
+        if not isinstance(raw, list):
+            self.data["projects"] = []
+            return
+        for p in raw:
+            if not isinstance(p, dict):
+                continue
+            pid = p.get("id")
+            if not isinstance(pid, str) or not pid or pid in seen:
+                pid = self._new_pid()
+            seen.add(pid)
+            name = p.get("name")
+            name = name.strip()[:20] if isinstance(name, str) else ""
+            color = p.get("color")
+            if not isinstance(color, str) or not re.fullmatch(r"#[0-9A-Fa-f]{6}", color):
+                color = PALETTE[len(out) % len(PALETTE)]
+            out.append({"id": pid, "name": name or "未命名", "color": color})
+        self.data["projects"] = out
+
+    def _clean_tasks(self, raw, default_pid=""):
+        out, seen = [], set()
+        if not isinstance(raw, list):
+            self.data["tasks"] = []
+            return
+        for t in raw:
+            if not isinstance(t, dict):
+                continue
+            tid = t.get("id")
+            if not isinstance(tid, str) or not tid or tid in seen:
+                tid = "t" + uuid.uuid4().hex[:8]
+            seen.add(tid)
+            text = t.get("text")
+            text = text if isinstance(text, str) else ("" if text is None else str(text))
+            if not text.strip():
+                continue                       # 空文字条目没有意义，直接丢
+            pid = t.get("pid")
+            pid = pid if isinstance(pid, str) else default_pid
+            out.append({
+                "id": tid,
+                "pid": pid,
+                "text": text[:500],
+                "due": self._as_due(t.get("due")),
+                "done": self._as_bool(t.get("done", False), False),
+                "done_at": t.get("done_at") if isinstance(t.get("done_at"), str) else None,
+                "star": self._as_bool(t.get("star", False), False),
+                "created": t.get("created") if isinstance(t.get("created"), str) else now_str(),
+                "notified": self._as_bool(t.get("notified", False), False),
+            })
+        self.data["tasks"] = out
 
     def load(self):
         if not self.path.exists():
@@ -130,31 +302,44 @@ class Store:
         raw = data
         if not isinstance(raw, dict):
             return
-        if "projects" in raw:
-            self.data["projects"] = raw.get("projects", [])
-            self.data["tasks"] = raw.get("tasks", [])
-            self.data["settings"].update(raw.get("settings", {}))
+        if "projects" in raw or "tasks" in raw:
+            self._clean_projects(raw.get("projects"))
+            self._clean_settings(raw.get("settings"))
+            self._clean_tasks(raw.get("tasks"))
         else:
             # 旧版（单清单）数据：全部装进「默认项目」
-            pid = self._new_pid()
-            self.data["projects"].append({"id": pid, "name": "默认项目",
-                                          "color": PALETTE[0]})
-            for t in raw.get("tasks", []):
-                t["pid"] = pid
-                if t.get("due"):
-                    t["due"] = t["due"][:10]     # 从 "YYYY-MM-DD HH:MM" 截成日期
-                self.data["tasks"].append(t)
-            self.data["settings"].update(raw.get("settings", {}))
-            self.save()
+            tasks = []
+            if isinstance(raw.get("tasks"), list):
+                for t in raw["tasks"]:
+                    if isinstance(t, dict):
+                        if t.get("due"):
+                            t["due"] = str(t["due"])[:10]   # "YYYY-MM-DD HH:MM" → 日期
+                        tasks.append(t)
+            if tasks:
+                pid = self._new_pid()
+                self.data["projects"].append({"id": pid, "name": "默认项目",
+                                              "color": PALETTE[0]})
+                self._clean_settings(raw.get("settings"))
+                self._clean_tasks(tasks, default_pid=pid)
+                self.save()
 
     def save(self):
+        """原子写入。失败时一定让用户知道，绝不能悄悄丢数据。"""
         try:
             tmp = self.path.with_suffix(".tmp")
             tmp.write_text(json.dumps(self.data, ensure_ascii=False, indent=2),
                            encoding="utf-8")
             tmp.replace(self.path)
+            return True
         except Exception as e:
             print("保存失败:", e)
+            if self.on_error and not self._err_notified:
+                self._err_notified = True
+                try:
+                    self.on_error(str(self.path), str(e))
+                except Exception:
+                    pass
+            return False
 
     # ---------- 项目 ----------
     @staticmethod
@@ -198,6 +383,9 @@ class Store:
         return self.data["tasks"]
 
     def add(self, text, pid="", due=None, star=False):
+        text = (text or "").strip()[:500]   # 超长文字会把列表撑变形
+        if not text:
+            return None
         t = {"id": "t" + uuid.uuid4().hex[:8], "pid": pid, "text": text,
              "due": due, "done": False, "star": star,
              "created": now_str(), "done_at": None, "notified": False}
@@ -284,6 +472,27 @@ def parse_due(text):
     return text, None
 
 
+def wrap_soft(text, n=16):
+    """给没有空格的超长串（链接、订单号、连续英文）插入零宽空格。
+
+    QLabel 的自动换行只在空格和汉字边界处断行，一串 200 个字母会直接
+    横向溢出、把窗口撑破。插 U+200B 后视觉上一个字都没变，但能折行。
+    """
+    if not isinstance(text, str) or len(text) < n:
+        return text
+    out, run = [], 0
+    for ch in text:
+        out.append(ch)
+        if ch.isspace():
+            run = 0
+        else:
+            run += 1
+            if run >= n:
+                out.append("\u200b")
+                run = 0
+    return "".join(out)
+
+
 def parse_date_only(s):
     """把「明天」「周五」「11-06」「3天后」「2026-12-01」解析成 date；认不出返回 None"""
     s = (s or "").strip()
@@ -296,9 +505,12 @@ def parse_date_only(s):
         off = {"今天": 0, "明天": 1, "后天": 2, "大后天": 3}[m.group(1)]
         return today + dt.timedelta(days=off)
 
-    m = re.search(r"(\d{1,3})\s*天\s*(后|内)", s)
+    m = re.search(r"(-?\d{1,3})\s*天\s*(后|内|前)", s)
     if m:
-        return today + dt.timedelta(days=int(m.group(1)))
+        n = int(m.group(1))
+        if m.group(2) == "前":
+            n = -abs(n)
+        return today + dt.timedelta(days=n)
 
     m = re.search(r"(下)?(?:周|星期|礼拜)([一二三四五六日天])", s)
     if m:
@@ -1101,7 +1313,7 @@ class TaskRow(QWidget):
             f"color:{'#CBD8D2' if done else C_STAR};background:transparent;")
 
         self.lbl.setTextFormat(Qt.PlainText)
-        self.lbl.setText(raw)
+        self.lbl.setText(wrap_soft(raw))
         f = QFont(self.lbl.font())
         f.setPointSizeF(9.6)
         f.setStrikeOut(done)
@@ -1208,6 +1420,8 @@ class Planner(QWidget):
     def __init__(self):
         super().__init__()
         self.store = Store(DATA_PATH)
+        self._pending_save_error = None
+        self.store.on_error = lambda p, e: setattr(self, "_pending_save_error", (p, e))
         st = self.store.settings
 
         self.setWindowTitle(APP_NAME)
@@ -1504,6 +1718,11 @@ class Planner(QWidget):
         self._save_timer = QTimer(self)
         self._save_timer.setSingleShot(True)
         self._save_timer.timeout.connect(self._save_geometry)
+
+        # 写盘失败必须当场告诉用户，否则买家用两天发现东西全没了
+        self._err_timer = QTimer(self)
+        self._err_timer.timeout.connect(self._flush_save_error)
+        self._err_timer.start(2000)
 
         from PySide6.QtGui import QShortcut, QKeySequence
         QShortcut(QKeySequence("Escape"), self, activated=self._on_esc)
@@ -1883,6 +2102,9 @@ class Planner(QWidget):
         pid = self._add_pid if self.store.project(self._add_pid) else ""
         t = self.store.add(text, pid, due, star)
         self.input.clear()
+        if t is None:                 # 只剩一个「!」之类，加进去是空条目
+            self.input.setFocus()
+            return
         self.reload(focus_id=t["id"])
         self.input.setFocus()
 
@@ -2152,7 +2374,7 @@ class Planner(QWidget):
         menu = QMenu(self)
         menu.setStyleSheet(MENU_QSS)
         a1 = menu.addAction("清空当前视图的已完成")
-        a2 = menu.addAction("打开数据文件")
+        a2 = menu.addAction("打开数据文件夹")
         a3 = menu.addAction("新建项目…")
         a4 = menu.addAction("置顶显示" + ("  ✓" if self.windowFlags()
                                           & Qt.WindowStaysOnTopHint else ""))
@@ -2163,7 +2385,13 @@ class Planner(QWidget):
             self.store.clear_done(None if self._filter == "all" else self._filter)
             self.reload()
         elif act == a2:
-            os.startfile(str(DATA_PATH))
+            # 打开文件夹而不是文件：新装还没写过盘时文件不存在，
+            # 直接 startfile 一个不存在的路径会报错
+            try:
+                DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
+                os.startfile(str(DATA_PATH.parent))
+            except Exception as e:
+                self._say("打不开文件夹：" + str(e))
         elif act == a3:
             self._new_project()
         elif act == a4:
@@ -2216,6 +2444,23 @@ class Planner(QWidget):
             self._today = today
             self._refresh_header()
             self.reload()
+
+    def _flush_save_error(self):
+        """写盘失败的提示，只弹一次。"""
+        err = self._pending_save_error
+        if not err:
+            return
+        self._pending_save_error = None
+        path, msg = err
+        self._say("保存失败，请检查文件夹权限")
+        try:
+            ask_confirm(self, "数据没能保存",
+                        f"写入下面这个位置时出错：\n{path}\n\n{msg}\n\n"
+                        "请把程序换到有写入权限的文件夹（比如 D 盘自建目录），"
+                        "或者先把 data.json 复制一份备份。",
+                        ok_text="知道了", danger=True, width=390)
+        except Exception:
+            pass
 
     def _quit(self):
         self.store.save()
@@ -2289,7 +2534,33 @@ def activate_existing():
     return False
 
 
+def _install_crash_log():
+    """把未捕获异常写进日志。
+
+    打包成 --windowed 后没有控制台，print 出来的东西谁也看不见。
+    买家说"它自己闪退了"时，有这个日志才能查。
+    """
+    log = LOG_DIR / "error.log"
+
+    def hook(exc_type, exc, tb):
+        try:
+            LOG_DIR.mkdir(parents=True, exist_ok=True)
+            with open(log, "a", encoding="utf-8") as fh:
+                fh.write("\n" + "=" * 60 + "\n")
+                fh.write(dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S") + "\n")
+                fh.write("".join(traceback.format_exception(exc_type, exc, tb)))
+        except Exception:
+            pass
+        try:
+            sys.__excepthook__(exc_type, exc, tb)
+        except Exception:
+            pass
+
+    sys.excepthook = hook
+
+
 def main():
+    _install_crash_log()
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     app.setApplicationName(APP_NAME)
