@@ -90,6 +90,12 @@ C_STAR      = "#E9953C"
 PALETTE = ["#17A673", "#3E8FD8", "#E9953C", "#D95C5C",
            "#8E6BC6", "#12A5A5", "#D6689E", "#5F7A70"]
 
+# 卡片四周留白（给投影用），折叠后的窗口高度要把这部分算进去
+CARD_MARGIN = 14
+HEADER_H = 56
+FOLD_H = HEADER_H + CARD_MARGIN * 2       # 折叠态窗口总高
+MIN_OPEN_H = 300                          # 展开态最小高度：再矮输入框就会被压扁
+
 WEEK_CN = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
 
 # 透明度可选档位（1.0 = 不透明）
@@ -221,7 +227,7 @@ class Store:
         if "w" in raw:
             st["w"] = self._as_int(raw["w"], 380, 320, 1200)
         if "h" in raw:
-            st["h"] = self._as_int(raw["h"], 500, 260, 2000)
+            st["h"] = self._as_int(raw["h"], 500, MIN_OPEN_H, 2000)
         if "x" in raw:
             st["x"] = None if raw["x"] is None else self._as_int(raw["x"], None)
         if "y" in raw:
@@ -1463,7 +1469,7 @@ class Planner(QWidget):
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.resize(int(st.get("w") or 380), int(st.get("h") or 500))
-        self.setMinimumSize(320, 260)
+        self.setMinimumSize(320, MIN_OPEN_H)
         if st.get("on_top", True):
             self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
 
@@ -1511,7 +1517,7 @@ class Planner(QWidget):
     # ---------------- 界面 ----------------
     def _build_ui(self):
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(14, 14, 14, 14)
+        outer.setContentsMargins(CARD_MARGIN, CARD_MARGIN, CARD_MARGIN, CARD_MARGIN)
         outer.setSpacing(0)
 
         self.card = QFrame()
@@ -1541,7 +1547,7 @@ class Planner(QWidget):
 
         # ---- 标题栏 ----
         self.header = QWidget()
-        self.header.setFixedHeight(56)
+        self.header.setFixedHeight(HEADER_H)
         self.header.setCursor(Qt.OpenHandCursor)
         h = QHBoxLayout(self.header)
         h.setContentsMargins(16, 0, 10, 0)
@@ -2399,11 +2405,22 @@ class Planner(QWidget):
     def _apply_fold(self):
         self.body.setVisible(not self._folded)
         self.b_fold.setText("▢" if self._folded else "—")
-        self.card.setMinimumHeight(56 if self._folded else 220)
         if self._folded:
-            self.resize(self.width(), 56 + 28)
+            # 折叠后的高度 = 标题栏 + 卡片上下留白。必须同步压低「最小高度」，
+            # 否则 resize 会被 minimumSize 顶回去，标题栏下面空出一大片白底。
+            # 最大高度也要锁死，避免折叠态被拖大后又是一片空白。
+            self.setMinimumHeight(FOLD_H)
+            self.setMaximumHeight(FOLD_H)
+            self.card.setMinimumHeight(FOLD_H - CARD_MARGIN * 2)
+            self.grip.setVisible(False)
+            self.resize(self.width(), FOLD_H)
         else:
-            self.resize(self.width(), int(self.store.settings.get("h") or 500))
+            self.setMinimumHeight(MIN_OPEN_H)
+            self.setMaximumHeight(16777215)      # QWIDGETSIZE_MAX，解除折叠时的锁
+            self.card.setMinimumHeight(220)
+            self.grip.setVisible(True)
+            self.resize(self.width(),
+                        max(MIN_OPEN_H, int(self.store.settings.get("h") or 500)))
 
     def _show_more_menu(self):
         menu = QMenu(self)

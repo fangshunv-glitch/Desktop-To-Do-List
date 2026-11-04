@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['D:/AI/电脑运维/desktop-planner/main.py'],
+    ['main.py'],
     pathex=[],
     binaries=[],
     datas=[],
@@ -32,7 +32,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['D:/AI/电脑运维/desktop-planner/icon.ico'],
+    icon=['icon.ico'],
 )
 coll = COLLECT(
     exe,
