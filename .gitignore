@@ -1,0 +1,40 @@
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# ---------- 打包产物 ----------
+build/
+build[0-9]*/
+dist/
+dist[0-9]*/
+app/
+app[0-9]*/
+TodayPlan/
+TodayPlan_[a-z]*/
+*.exe
+*.manifest
+
+# ---------- 本地个人数据（绝不入库） ----------
+data.json
+data.broken.json
+*.broken.json
+data_keep.json
+
+# ---------- 编辑器 / 系统 ----------
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---------- 临时 ----------
+_shot*.py
+_shot*.png
+_crop.png
+_build.log
+*.log

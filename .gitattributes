@@ -1,0 +1,10 @@
+# 统一换行，避免 Windows/Linux 来回改文件
+* text=auto eol=lf
+
+# Windows 批处理必须是 CRLF，否则某些环境执行异常
+*.bat text eol=crlf
+
+# 二进制，不做行尾转换
+*.png binary
+*.ico binary
+*.exe binary

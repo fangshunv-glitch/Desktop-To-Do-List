@@ -1,0 +1,90 @@
+{
+  "version": 2,
+  "projects": [
+    { "id": "p1", "name": "可研评审", "color": "#17A673" },
+    { "id": "p2", "name": "施工图", "color": "#3E8FD8" },
+    { "id": "p3", "name": "验收材料", "color": "#E9953C" },
+    { "id": "p4", "name": "日常杂务", "color": "#8E6BC6" }
+  ],
+  "tasks": [
+    {
+      "id": "t1",
+      "pid": "p3",
+      "text": "补齐验收材料：质量评估报告、影像资料",
+      "due": "2026-11-02",
+      "star": true,
+      "done": false,
+      "done_at": null,
+      "created": "2026-11-01T09:00:00",
+      "notified": false
+    },
+    {
+      "id": "t2",
+      "pid": "p1",
+      "text": "和甲方对一遍可研评审意见",
+      "due": "2026-11-04",
+      "star": false,
+      "done": false,
+      "done_at": null,
+      "created": "2026-11-02T10:20:00",
+      "notified": false
+    },
+    {
+      "id": "t3",
+      "pid": "p1",
+      "text": "出线路路径对比图 v2",
+      "due": "2026-11-05",
+      "star": false,
+      "done": false,
+      "done_at": null,
+      "created": "2026-11-02T15:40:00",
+      "notified": false
+    },
+    {
+      "id": "t4",
+      "pid": "p2",
+      "text": "杆塔基础配筋图交底",
+      "due": "2026-11-08",
+      "star": false,
+      "done": false,
+      "done_at": null,
+      "created": "2026-11-03T08:30:00",
+      "notified": false
+    },
+    {
+      "id": "t5",
+      "pid": "p4",
+      "text": "更新周报模板",
+      "due": "2026-11-16",
+      "star": false,
+      "done": false,
+      "done_at": null,
+      "created": "2026-11-03T17:10:00",
+      "notified": false
+    },
+    {
+      "id": "t6",
+      "pid": "p4",
+      "text": "发评审会通知",
+      "due": "2026-11-03",
+      "star": false,
+      "done": true,
+      "done_at": "2026-11-04T09:12:00",
+      "created": "2026-11-01T08:00:00",
+      "notified": true
+    }
+  ],
+  "settings": {
+    "on_top": true,
+    "x": null,
+    "y": null,
+    "h": null,
+    "w": null,
+    "folded": false,
+    "show_done": true,
+    "opacity": 1.0,
+    "hover_opaque": true,
+    "filter": "all",
+    "ui_ver": 2
+  }
+}
