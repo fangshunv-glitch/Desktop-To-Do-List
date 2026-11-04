@@ -435,26 +435,50 @@ class Store:
 # ============================================================
 # 日期工具
 # ============================================================
-DATE_RE_1 = re.compile(r"(?:(?<=\s)|^)(\d{1,2})\s*[-/.月]\s*(\d{1,2})日?(?=\s|$)")
-DATE_RE_2 = re.compile(r"(\d{1,2})\s*天后")
+DATE_RE_1 = re.compile(r"(?:(?<=\s)|^)(\d{1,2})\s*[-/月]\s*(\d{1,2})日?(?=\s|$)")
+DATE_RE_2 = re.compile(r"(-?\d{1,3})\s*天\s*(后|内|前)")
+DATE_RE_3 = re.compile(r"(\d{4})\s*[-/.年]\s*(\d{1,2})\s*[-/.月]\s*(\d{1,2})\s*日?")
+DATE_RE_4 = re.compile(r"(?:(?<=\s)|^)(下)?(?:周|星期|礼拜)([一二三四五六日天])(?=\s|$)")
+
+
+def _cut(text, m):
+    """把匹配到的日期片段从正文里摘掉，顺手收掉多余空格。"""
+    rest = (text[:m.start()] + " " + text[m.end():]).strip()
+    return re.sub(r"\s{2,}", " ", rest)
 
 
 def parse_due(text):
-    """从输入里抽截止日期，返回 (剩余文本, date 或 None)"""
+    """从输入里抽截止日期，返回 (剩余文本, date 或 None)
+
+    识别顺序有讲究：先长短后短，否则「2027-01-31」会被当成「01-31」，
+    「下周一」会被当成「周一」。
+    """
     today = dt.date.today()
 
-    m = re.search(r"(今天|明天|后天)", text)
+    # 完整年月日：2027-01-31 / 2027/1/31 / 2027年1月31日
+    m = DATE_RE_3.search(text)
     if m:
-        d = today + dt.timedelta(days={"今天": 0, "明天": 1, "后天": 2}[m.group(1)])
-        rest = (text[:m.start()] + " " + text[m.end():]).strip()
-        return re.sub(r"\s{2,}", " ", rest), d
+        try:
+            d = dt.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+            return _cut(text, m), d
+        except ValueError:
+            pass
 
+    # 今天 / 明天 / 后天 / 大后天（「大后天」必须排在「后天」前面）
+    m = re.search(r"(大后天|今天|明天|后天)", text)
+    if m:
+        off = {"大后天": 3, "今天": 0, "明天": 1, "后天": 2}[m.group(1)]
+        return _cut(text, m), today + dt.timedelta(days=off)
+
+    # 3天后 / 3天内 / 3天前 / -3天后
     m = DATE_RE_2.search(text)
     if m:
-        d = today + dt.timedelta(days=int(m.group(1)))
-        rest = (text[:m.start()] + " " + text[m.end():]).strip()
-        return re.sub(r"\s{2,}", " ", rest), d
+        n = int(m.group(1))
+        if m.group(2) == "前":
+            n = -abs(n)
+        return _cut(text, m), today + dt.timedelta(days=n)
 
+    # 11-06 / 11/6 / 11月6日
     m = DATE_RE_1.search(text)
     if m:
         mm, dd = int(m.group(1)), int(m.group(2))
@@ -463,12 +487,23 @@ def parse_due(text):
                 d = dt.date(today.year, mm, dd)
                 if d < today - dt.timedelta(days=180):   # 明显是过去的月份 → 算明年
                     d = dt.date(today.year + 1, mm, dd)
-                rest = (text[:m.start()] + " " + text[m.end():]).strip()
-                rest = re.sub(r"\s{2,}", " ", rest)
+                rest = _cut(text, m)
                 if rest:
                     return rest, d
             except ValueError:
                 pass
+    # 周五 / 下周一 / 星期三
+    m = DATE_RE_4.search(text)
+    if m:
+        ch = "日" if m.group(2) in ("日", "天") else m.group(2)
+        wd = "一二三四五六日".index(ch)
+        if m.group(1):                      # 「下周一」= 下周一的日期
+            mon = today - dt.timedelta(days=today.weekday())
+            d = mon + dt.timedelta(days=7 + wd)
+        else:
+            d = today + dt.timedelta(days=(wd - today.weekday()) % 7)
+        return _cut(text, m), d
+
     return text, None
 
 
