@@ -1523,11 +1523,7 @@ class Planner(QWidget):
         self.card = QFrame()
         self.card.setObjectName("card")
         self.card.setStyleSheet(card_qss(self._opacity))
-        sh = QGraphicsDropShadowEffect(self)
-        sh.setBlurRadius(34)
-        sh.setOffset(0, 8)
-        sh.setColor(QColor(18, 58, 44, 42))
-        self.card.setGraphicsEffect(sh)
+        self._set_card_shadow(True)
         outer.addWidget(self.card)
 
         v = QVBoxLayout(self.card)
@@ -2363,7 +2359,11 @@ class Planner(QWidget):
                 return
 
     def _refresh_card(self):
-        eff = 1.0 if (self._hover_opaque and self._hovering) else self._opacity
+        # 折叠态一律实色：半透明的小条看着发脏，而且每次 hover 定时器都要
+        # 重设一次样式表，平白多出一堆重绘路径。
+        eff = 1.0 if (self._folded or
+                      (self._hover_opaque and getattr(self, "_hovering", False))) \
+            else self._opacity
         if abs(eff - self._card_alpha) > 0.004:
             self._card_alpha = eff
             self.card.setStyleSheet(card_qss(eff))
@@ -2402,9 +2402,35 @@ class Planner(QWidget):
         self.store.save()
         self._apply_fold()
 
+    def _set_card_shadow(self, on):
+        """折叠态不要阴影。
+
+        阴影是用 QGraphicsDropShadowEffect 实现的，它会把整个卡片先渲染进
+        一张缓存位图再贴出来。窗口高度从 500 骤降到 84 时这张缓存位图的尺寸
+        不一定跟着更新，卡片就成了空白（阴影还在、文字没了）。折叠态本来也
+        不需要 34px 的大阴影，直接摘掉最省事。
+        """
+        if self.card.graphicsEffect() is not None:
+            self.card.setGraphicsEffect(None)
+        if not on:
+            return
+        sh = QGraphicsDropShadowEffect(self)
+        sh.setBlurRadius(34)
+        sh.setOffset(0, 8)
+        sh.setColor(QColor(18, 58, 44, 42))
+        self.card.setGraphicsEffect(sh)
+
+    def _kick_repaint(self):
+        self.card.updateGeometry()
+        self.card.update()
+        self.update()
+
     def _apply_fold(self):
         self.body.setVisible(not self._folded)
         self.b_fold.setText("▢" if self._folded else "—")
+        visible = self.isVisible()
+        if visible:
+            self.setUpdatesEnabled(False)
         if self._folded:
             # 折叠后的高度 = 标题栏 + 卡片上下留白。必须同步压低「最小高度」，
             # 否则 resize 会被 minimumSize 顶回去，标题栏下面空出一大片白底。
@@ -2421,13 +2447,21 @@ class Planner(QWidget):
             self.grip.setVisible(True)
             self.resize(self.width(),
                         max(MIN_OPEN_H, int(self.store.settings.get("h") or 500)))
-        # 高度骤变后，半透明无边框窗口的绘制缓冲不会自动按新尺寸重排，
-        # 屏幕上会留着旧画面的切片（折叠时表现为一整块白板）。这里主动让
-        # 卡片按新尺寸重新布局，并立刻重绘一次，把残影压掉。
-        self.card.updateGeometry()
-        self.card.update()
-        self.update()
-        self.repaint()
+        # 展开才要阴影；折叠态摘掉（见 _set_card_shadow 的说明）
+        self._set_card_shadow(not self._folded)
+        # 折叠/展开两态的底板不透明度规则不同（见 _refresh_card），要立刻生效
+        self._card_alpha = -1.0
+        self._refresh_card()
+        if visible:
+            self.setUpdatesEnabled(True)
+            # 高度骤变后，半透明无边框窗口在 Windows 上会丢掉原来的合成表面，
+            # 只补画「变化了」的那几块，剩下全是白底——折叠时就是一整块白板。
+            # update()/repaint() 改不动合成层，hide + show 会让窗口重建一次
+            # 合成表面，内容才会完整重画。两者在同一函数里，不会看到闪。
+            self.hide()
+            self.show()
+            QTimer.singleShot(0, self._kick_repaint)
+
 
     def _show_more_menu(self):
         menu = QMenu(self)
