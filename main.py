@@ -2359,10 +2359,9 @@ class Planner(QWidget):
                 return
 
     def _refresh_card(self):
-        # 折叠态一律实色：半透明的小条看着发脏，而且每次 hover 定时器都要
-        # 重设一次样式表，平白多出一堆重绘路径。
-        eff = 1.0 if (self._folded or
-                      (self._hover_opaque and getattr(self, "_hovering", False))) \
+        # 折叠态照样遵守「鼠标不在就半透明」，只是折叠条更矮，别让它一直
+        # 实白地杵在桌面上。
+        eff = 1.0 if (self._hover_opaque and getattr(self, "_hovering", False)) \
             else self._opacity
         if abs(eff - self._card_alpha) > 0.004:
             self._card_alpha = eff
