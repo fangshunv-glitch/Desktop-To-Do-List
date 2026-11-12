@@ -44,3 +44,7 @@ _mkt*.py
 _mkt/
 _release/
 小红书上架与发货方案.md
+
+# 本地回归脚本（保留在盘上但不入库）
+_test_fold*.py
+_shots/
