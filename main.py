@@ -2421,6 +2421,13 @@ class Planner(QWidget):
             self.grip.setVisible(True)
             self.resize(self.width(),
                         max(MIN_OPEN_H, int(self.store.settings.get("h") or 500)))
+        # 高度骤变后，半透明无边框窗口的绘制缓冲不会自动按新尺寸重排，
+        # 屏幕上会留着旧画面的切片（折叠时表现为一整块白板）。这里主动让
+        # 卡片按新尺寸重新布局，并立刻重绘一次，把残影压掉。
+        self.card.updateGeometry()
+        self.card.update()
+        self.update()
+        self.repaint()
 
     def _show_more_menu(self):
         menu = QMenu(self)
